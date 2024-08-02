@@ -1,6 +1,9 @@
 from pylab import *
 from casadi import *
 
+PLOT = 0
+WARMUP = 0
+
 T = 1.0 # control horizon [s]
 N = 400 # Number of control intervals
 
@@ -49,7 +52,7 @@ f = Function('f', [x, u], [dx])
 #    Optimal control problem, multiple shooting
 # -----------------------------------------------
 
-opti = casadi.Opti()
+opti = Opti()
 
 # Decision variables for states
 X = opti.variable(nx,N+1)
@@ -91,24 +94,53 @@ xbar = opti.variable()
 opti.minimize(1e-6*sumsqr(U)+sumsqr(X[:,-1]-xbar))
 
 # solve optimization problem
-options = {}
-#options["jit"] = True
-#options["jit_options"] = {"flags":["-O3","--fast-math","-march=native"]}
-options["madnlp"] = {"linear_solver":"cudss"}
-opti.solver('madnlp',options)
+tol = 5
+ip_solver = "madnlp"
+linear_solver = "mumps"
 
-sol = opti.solve()
+sol_db = {}
 
-figure()
-spy(sol.value(jacobian(opti.g,opti.x)))
+#case_madnlp = ("madnlp","cudss",4)
+#case_madnlp = ("ipopt","mumps",4)
 
-##
-# -----------------------------------------------
-#    Post-processing: plotting
-# -----------------------------------------------
+#case_madnlp = ("madnlp","cudss",5)
+case_madnlp = ("madnlp","mumps",5)
+case_ipopt = ("ipopt","mumps",5)
 
-figure()
-Xsol = sol.value(X)
-plot(Xsol.T,'o-')
+for testcase in (case_madnlp, case_ipopt):
+  (ip_solver,linear_solver,tol) = testcase
+  options = {}
+  options["jit"] = True
+  options["jit_options"] = {"flags":["-O3","--fast-math","-march=native"]}
+  options[ip_solver] = {"linear_solver":linear_solver,"tol":10**(-tol)}
 
-show()
+  if WARMUP:
+    opti.solver(ip_solver,options)
+    sol = opti.solve()
+  opti.solver(ip_solver,options)
+  sol = opti.solve()
+
+  x_opt = sol.value(X)
+  sol_db[testcase] = x_opt
+
+  # --- plotting
+  if PLOT:
+    tgrid = np.linspace(0, T, N+1)
+    plt.figure(2)
+    plt.clf()
+    plt.plot(tgrid, x_opt.T, '-')
+    plt.xlabel('t')
+    plt.legend(['x'])
+    plt.grid()
+    plt.savefig(f"./plot_{ip_solver}_{linear_solver}_tol{tol}.png")
+
+def average_diff(sol0,sol1):
+  diff = 0
+  wN=sol0.shape[0]*sol0.shape[1]
+  for i in range(wN-1):
+    diff += abs(sol0.flat[i] - sol1.flat[i])
+  diff /= wN
+  return diff
+
+diff = average_diff(sol_db[case_madnlp], sol_db[case_ipopt])
+print("Average solution difference between {case1} and {case1}:\n", diff)
